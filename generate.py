@@ -13,6 +13,8 @@ import torch.multiprocessing as mp
 import numpy as np 
 from PIL import Image
 
+from utils import download_model
+
 
 def load_model_from_config(config, ckpt):
     print(f"Loading model from {ckpt}")
@@ -137,6 +139,9 @@ def subprocessfn(rank, config_path, ckpt_path, num_imgs, batchsize, outdir, num_
 # python3 generate.py --num_imgs=50000 --outdir=out/g1.5dpm25 --guidance=1.5
 
 def main(config_path, ckpt_path, num_imgs, batchsize, outdir, num_steps, save_step, seed, guidance, num_gpus):
+    if not os.path.exists(ckpt_path):
+        download_model('c256v2')
+
     os.makedirs(outdir, exist_ok=True)
     mp.set_start_method('spawn')
     # sampler = DDIMSampler(model)
