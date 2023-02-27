@@ -1123,6 +1123,118 @@ class DPM_Solver:
             x = self.denoise_to_zero_fn(x, torch.ones((x.shape[0],)).to(device) * t_0)
         return x
 
+    def sample_traj(self, x, steps=20, t_start=None, t_end=None, order=3, skip_type='time_uniform',
+        method='singlestep', lower_order_final=True, denoise_to_zero=False, solver_type='dpm_solver',
+        atol=0.0078, rtol=0.05, save_step=8,
+    ):
+        """
+        Compute the sample at time `t_end` by DPM-Solver, given the initial `x` at time `t_start`.
+
+        =====================================================
+
+        We support the following algorithms for both noise prediction model and data prediction model:
+            - 'multistep':
+                Multistep DPM-Solver with the order of `order`. The total number of function evaluations (NFE) == `steps`.
+                We initialize the first `order` values by lower order multistep solvers.
+                Given a fixed NFE == `steps`, the sampling procedure is:
+                    Denote K = steps.
+                    - If `order` == 1:
+                        - We use K steps of DPM-Solver-1 (i.e. DDIM).
+                    - If `order` == 2:
+                        - We firstly use 1 step of DPM-Solver-1, then use (K - 1) step of multistep DPM-Solver-2.
+                    - If `order` == 3:
+                        - We firstly use 1 step of DPM-Solver-1, then 1 step of multistep DPM-Solver-2, then (K - 2) step of multistep DPM-Solver-3.
+        =====================================================
+
+        Some advices for choosing the algorithm:
+            - For **unconditional sampling** or **guided sampling with small guidance scale** by DPMs:
+                Use singlestep DPM-Solver ("DPM-Solver-fast" in the paper) with `order = 3`.
+                e.g.
+                    >>> dpm_solver = DPM_Solver(model_fn, noise_schedule, predict_x0=False)
+                    >>> x_sample = dpm_solver.sample(x, steps=steps, t_start=t_start, t_end=t_end, order=3,
+                            skip_type='time_uniform', method='singlestep')
+            - For **guided sampling with large guidance scale** by DPMs:
+                Use multistep DPM-Solver with `predict_x0 = True` and `order = 2`.
+                e.g.
+                    >>> dpm_solver = DPM_Solver(model_fn, noise_schedule, predict_x0=True)
+                    >>> x_sample = dpm_solver.sample(x, steps=steps, t_start=t_start, t_end=t_end, order=2,
+                            skip_type='time_uniform', method='multistep')
+
+        We support three types of `skip_type`:
+            - 'logSNR': uniform logSNR for the time steps. **Recommended for low-resolutional images**
+            - 'time_uniform': uniform time for the time steps. **Recommended for high-resolutional images**.
+            - 'time_quadratic': quadratic time for the time steps.
+
+        =====================================================
+        Args:
+            x: A pytorch tensor. The initial value at time `t_start`
+                e.g. if `t_start` == T, then `x` is a sample from the standard normal distribution.
+            steps: A `int`. The total number of function evaluations (NFE).
+            t_start: A `float`. The starting time of the sampling.
+                If `T` is None, we use self.noise_schedule.T (default is 1.0).
+            t_end: A `float`. The ending time of the sampling.
+                If `t_end` is None, we use 1. / self.noise_schedule.total_N.
+                e.g. if total_N == 1000, we have `t_end` == 1e-3.
+                For discrete-time DPMs:
+                    - We recommend `t_end` == 1. / self.noise_schedule.total_N.
+                For continuous-time DPMs:
+                    - We recommend `t_end` == 1e-3 when `steps` <= 15; and `t_end` == 1e-4 when `steps` > 15.
+            order: A `int`. The order of DPM-Solver.
+            skip_type: A `str`. The type for the spacing of the time steps. 'time_uniform' or 'logSNR' or 'time_quadratic'.
+            method: A `str`. The method for sampling. 'singlestep' or 'multistep' or 'singlestep_fixed' or 'adaptive'.
+            lower_order_final: A `bool`. Whether to use lower order solvers at the final steps.
+                Only valid for `method=multistep` and `steps < 15`. We empirically find that
+                this trick is a key to stabilizing the sampling by DPM-Solver with very few steps
+                (especially for steps <= 10). So we recommend to set it to be `True`.
+            solver_type: A `str`. The taylor expansion type for the solver. `dpm_solver` or `taylor`. We recommend `dpm_solver`.
+            atol: A `float`. The absolute tolerance of the adaptive step size solver. Valid when `method` == 'adaptive'.
+            rtol: A `float`. The relative tolerance of the adaptive step size solver. Valid when `method` == 'adaptive'.
+            save_step: save x every save_step steps
+        Returns:
+            x_end: A pytorch tensor. The approximated solution at time `t_end`.
+
+        """
+        t_0 = 1. / self.noise_schedule.total_N if t_end is None else t_end
+        t_T = self.noise_schedule.T if t_start is None else t_start
+        device = x.device
+        x_list = []
+        x_list.append(x)
+    
+        assert method == 'multistep'
+        assert steps >= order
+        timesteps = self.get_time_steps(skip_type=skip_type, t_T=t_T, t_0=t_0, N=steps, device=device)
+        assert timesteps.shape[0] - 1 == steps
+        with torch.no_grad():
+            vec_t = timesteps[0].expand((x.shape[0]))
+            model_prev_list = [self.model_fn(x, vec_t)]
+            t_prev_list = [vec_t]
+            # Init the first `order` values by lower order multistep DPM-Solver.
+            for init_order in range(1, order):
+                vec_t = timesteps[init_order].expand(x.shape[0])
+                x = self.multistep_dpm_solver_update(x, model_prev_list, t_prev_list, vec_t, init_order, solver_type=solver_type)
+                model_prev_list.append(self.model_fn(x, vec_t))
+                t_prev_list.append(vec_t)
+                if init_order % save_step == 0:
+                    x_list.append(x)
+            # Compute the remaining values by `order`-th order multistep DPM-Solver.
+            for step in range(order, steps + 1):
+                vec_t = timesteps[step].expand(x.shape[0])
+                if lower_order_final and steps < 15:
+                    step_order = min(order, steps + 1 - step)
+                else:
+                    step_order = order
+                x = self.multistep_dpm_solver_update(x, model_prev_list, t_prev_list, vec_t, step_order, solver_type=solver_type)
+                for i in range(order - 1):
+                    t_prev_list[i] = t_prev_list[i + 1]
+                    model_prev_list[i] = model_prev_list[i + 1]
+                t_prev_list[-1] = vec_t
+                # We do not need to evaluate the final model value.
+                if step < steps:
+                    model_prev_list[-1] = self.model_fn(x, vec_t)
+                if step % save_step ==0:
+                    x_list.append(x)
+        return x_list
+
 
 
 #############################################################

@@ -1,0 +1,10 @@
+data
+out
+refs
+tmp
+**/__pycache__/**
+**/**.ckpt
+**/**.png
+**/**.pb
+**/**.ipynb
+debug_notebook.py
