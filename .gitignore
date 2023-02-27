@@ -7,4 +7,5 @@ tmp
 **/**.png
 **/**.pb
 **/**.ipynb
+**/**.zip
 debug_notebook.py
