@@ -128,7 +128,7 @@ def subprocessfn(rank, config_path, ckpt_path, num_imgs, batchsize, outdir, num_
 @click.option('--num_imgs', help='Number of images to generate', metavar='INT', type=click.IntRange(min=1), default=64, show_default=True)
 @click.option('--batchsize', help='Batchsize', metavar='INT', type=click.IntRange(min=1), default=32, show_default=True)
 @click.option('--outdir', help='Output directory', type=str, default='out', show_default=True)
-@click.option('--num_steps', help='Number of solver steps', metavar='INT', type=click.IntRange(min=1), default=25, show_default=True)
+@click.option('--num_steps', help='Number of solver steps', metavar='INT', type=click.IntRange(min=1), default=64, show_default=True)
 @click.option('--save_step', help='Save data every save_step steps', metavar='INT', type=click.IntRange(min=1), default=8, show_default=True)
 @click.option('--seed', help='random seed', metavar='INT', type=click.IntRange(min=0), default=1, show_default=True)
 @click.option('--guidance', help='Guidance scale', type=click.FloatRange(min=0), default=1.5, show_default=True)
